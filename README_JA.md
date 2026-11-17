@@ -42,7 +42,7 @@ python detect.py image.jpg --pred 他の検出結果.json --gt 正解.json
 python tests/test_detector.py
 ```
 NMS としきい値、JSON 出力、枠の検証、照合の境界ケース、ultralytics 変換、`--pred` のコマンドライン、
-サンプル写真での実際の検出（OpenCV がある場合）を確認します。GitHub Actions で Windows・macOS・Linux 上で実行しています。
+サンプル写真での実際の検出（OpenCV がある場合）を確認します。
 
 ## サンプル画像
 

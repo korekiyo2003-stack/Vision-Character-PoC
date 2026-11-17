@@ -54,8 +54,7 @@ The evaluation layer is the same either way.
 python tests/test_detector.py
 ```
 NMS and thresholds, JSON output, box validation, matching edge cases, the ultralytics adapter, the command line
-with `--pred`, and real detection on the sample photo (when OpenCV is installed). GitHub Actions runs them on
-Windows, macOS and Linux.
+with `--pred`, and real detection on the sample photo (when OpenCV is installed).
 
 ## Sample image
 
