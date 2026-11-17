@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/cover.png" alt="Vision-Character-PoC" width="100%"></p>
+
 # Vision-Character-PoC: Detection Post-processing & Evaluation
 
 <div align="center">
