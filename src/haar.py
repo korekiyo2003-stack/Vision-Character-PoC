@@ -65,13 +65,22 @@ def draw(image_path: str | Path, out_path: str | Path, predictions: List[Detecti
     colors = {"face": (229, 70, 79), "eye_left": (112, 124, 14), "eye_right": (12, 65, 194)}
     for g in ground_truth or []:
         cv2.rectangle(image, (int(g.x1), int(g.y1)), (int(g.x2), int(g.y2)), (255, 255, 255), 1, cv2.LINE_AA)
-    for b in predictions:
+    placed = []  # label rectangles already drawn, to keep labels from covering each other
+
+    def overlaps(r):
+        return any(r[0] < q[2] and q[0] < r[2] and r[1] < q[3] and q[1] < r[3] for q in placed)
+
+    for b in sorted(predictions, key=lambda b: b.x1):
         c = colors.get(b.class_name, (0, 200, 255))
         cv2.rectangle(image, (int(b.x1), int(b.y1)), (int(b.x2), int(b.y2)), c, 2, cv2.LINE_AA)
         label = f"{b.class_name} {b.confidence:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        cv2.rectangle(image, (int(b.x1), int(b.y1) - th - 6), (int(b.x1) + tw + 6, int(b.y1)), c, -1)
-        cv2.putText(image, label, (int(b.x1) + 3, int(b.y1) - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        above = (int(b.x1), int(b.y1) - th - 6, int(b.x1) + tw + 6, int(b.y1))
+        below = (int(b.x1), int(b.y2), int(b.x1) + tw + 6, int(b.y2) + th + 6)
+        r = below if overlaps(above) or above[1] < 0 else above
+        placed.append(r)
+        cv2.rectangle(image, (r[0], r[1]), (r[2], r[3]), c, -1)
+        cv2.putText(image, label, (r[0] + 3, r[3] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
     out = Path(out_path)
     cv2.imwrite(str(out), image)
     return out
