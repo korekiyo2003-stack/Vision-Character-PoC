@@ -1,6 +1,10 @@
 """
 Vision Character Feature Detection & Inspection PoC
-Extracts object/facial bounding boxes and confidence evaluation reports for vision verification pipelines.
+
+Detector-agnostic post-processing and evaluation layer: takes raw boxes from any
+detector (e.g. a YOLO model via `boxes_from_ultralytics`), applies confidence
+filtering and per-class NMS, and scores the result against ground-truth boxes
+(precision / recall / F1 at an IoU threshold). No model is bundled.
 """
 
 from __future__ import annotations
@@ -8,7 +12,8 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 @dataclass
@@ -31,7 +36,13 @@ class DetectionBox:
 
     @property
     def area(self) -> float:
-        return self.width * self.height
+        return max(0.0, self.width) * max(0.0, self.height)
+
+    def __post_init__(self) -> None:
+        if self.x2 < self.x1 or self.y2 < self.y1:
+            raise ValueError(f"box {self.box_id}: expected x1<=x2 and y1<=y2, got {self}")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"box {self.box_id}: confidence {self.confidence} outside 0..1")
 
 
 @dataclass
@@ -41,15 +52,21 @@ class DetectionReport:
     mean_confidence: float
     classes_detected: Dict[str, int]
     boxes: List[DetectionBox]
-    latency_ms: float
+    latency_ms: float  # post-processing time only; model inference is not included
     status: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
 
     def to_summary_markdown(self) -> str:
         lines = [
-            f"### Detection Accuracy Report: {self.image_name}",
+            f"### Detection Report: {self.image_name}",
             f"- **Total Objects Detected**: {self.total_detections}",
             f"- **Mean Confidence**: {self.mean_confidence:.3f}",
-            f"- **Inference Latency**: {self.latency_ms:.1f} ms",
+            f"- **Post-processing Time**: {self.latency_ms:.2f} ms",
             "",
             "| Class | Count | Avg Confidence |",
             "| :--- | :---: | :---: |"
@@ -92,11 +109,10 @@ class CharacterDetector:
         return selected
 
     def run_detection(self, image_path: str | Path, candidate_boxes: Optional[List[DetectionBox]] = None) -> DetectionReport:
-        import time
-        t0 = time.time()
+        t0 = time.perf_counter()
         p = Path(image_path)
 
-        # In production this calls YOLOv8 (ultralytics); here we provide the deterministic evaluation layer
+        # Boxes come from the caller's detector (see boxes_from_ultralytics); none is bundled.
         raw_boxes = candidate_boxes or []
         filtered = [b for b in raw_boxes if b.confidence >= self.conf_thresh]
         final_boxes = self.apply_nms(filtered)
@@ -106,7 +122,7 @@ class CharacterDetector:
             class_counts[b.class_name] = class_counts.get(b.class_name, 0) + 1
 
         mean_conf = sum(b.confidence for b in final_boxes) / len(final_boxes) if final_boxes else 0.0
-        latency = (time.time() - t0) * 1000
+        latency = (time.perf_counter() - t0) * 1000
 
         return DetectionReport(
             image_name=p.name,
@@ -117,3 +133,75 @@ class CharacterDetector:
             latency_ms=round(latency, 2),
             status="PASSED" if final_boxes else "NO_OBJECTS"
         )
+
+
+def boxes_from_ultralytics(result: Any) -> List[DetectionBox]:
+    """Convert one ultralytics `Results` object (YOLOv8/YOLO11 `model(img)[i]`) to DetectionBox list."""
+    names = result.names
+    out: List[DetectionBox] = []
+    xyxy = result.boxes.xyxy.tolist()
+    confs = result.boxes.conf.tolist()
+    classes = result.boxes.cls.tolist()
+    for i, ((x1, y1, x2, y2), conf, cls) in enumerate(zip(xyxy, confs, classes), start=1):
+        out.append(DetectionBox(box_id=i, class_name=str(names[int(cls)]), confidence=float(conf),
+                                x1=float(x1), y1=float(y1), x2=float(x2), y2=float(y2)))
+    return out
+
+
+@dataclass
+class ClassMetrics:
+    class_name: str
+    true_positives: int
+    false_positives: int
+    false_negatives: int
+
+    @property
+    def precision(self) -> float:
+        d = self.true_positives + self.false_positives
+        return self.true_positives / d if d else 0.0
+
+    @property
+    def recall(self) -> float:
+        d = self.true_positives + self.false_negatives
+        return self.true_positives / d if d else 0.0
+
+    @property
+    def f1(self) -> float:
+        p, r = self.precision, self.recall
+        return 2 * p * r / (p + r) if p + r else 0.0
+
+
+def evaluate(predictions: Sequence[DetectionBox], ground_truth: Sequence[DetectionBox],
+             iou_threshold: float = 0.5) -> Dict[str, ClassMetrics]:
+    """Greedy one-to-one matching per class, highest confidence first (VOC/COCO style)."""
+    iou = CharacterDetector().calculate_iou
+    classes = sorted({b.class_name for b in predictions} | {b.class_name for b in ground_truth})
+    metrics: Dict[str, ClassMetrics] = {}
+    for cname in classes:
+        preds = sorted((b for b in predictions if b.class_name == cname), key=lambda b: b.confidence, reverse=True)
+        gts = [b for b in ground_truth if b.class_name == cname]
+        used = [False] * len(gts)
+        tp = fp = 0
+        for p in preds:
+            best_j, best_iou = -1, iou_threshold
+            for j, g in enumerate(gts):
+                if not used[j]:
+                    v = iou(p, g)
+                    if v >= best_iou:
+                        best_j, best_iou = j, v
+            if best_j >= 0:
+                used[best_j] = True
+                tp += 1
+            else:
+                fp += 1
+        metrics[cname] = ClassMetrics(cname, tp, fp, len(gts) - sum(used))
+    return metrics
+
+
+def metrics_markdown(metrics: Dict[str, ClassMetrics], iou_threshold: float = 0.5) -> str:
+    lines = [f"| Class | TP | FP | FN | Precision | Recall | F1 (IoU>={iou_threshold}) |",
+             "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"]
+    for m in metrics.values():
+        lines.append(f"| `{m.class_name}` | {m.true_positives} | {m.false_positives} | {m.false_negatives} | "
+                     f"{m.precision:.3f} | {m.recall:.3f} | {m.f1:.3f} |")
+    return "\n".join(lines)
