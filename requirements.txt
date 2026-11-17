@@ -1,0 +1,3 @@
+# Core (NMS, reports, evaluation) needs only the standard library.
+# Detection and drawing (OpenCV 4.x still bundles the Haar cascades; 5.x does not):
+opencv-python-headless>=4.8,<5

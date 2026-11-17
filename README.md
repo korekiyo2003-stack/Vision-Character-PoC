@@ -1,66 +1,66 @@
 <p align="center"><img src="docs/cover.png" alt="Vision-Character-PoC" width="100%"></p>
 
-# Vision-Character-PoC: Detection Post-processing & Evaluation
+# Vision-Character-PoC
 
-<div align="center">
+**Detects faces and eyes in an image, removes duplicate boxes, and scores the result against hand-labelled ground truth (precision, recall, F1), so "accuracy" is something you can show a client.**
 
-**Detector-agnostic NMS, structured reports, and precision / recall against ground truth**
-*Per-class NMS · JSON + Markdown reports · TP / FP / FN · YOLO (ultralytics) adapter*
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg)
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
+[日本語](README_JA.md)
 
-</div>
+## Use it
 
----
-
-## 1. What this is
-
-Raw detector output is not something a client can sign off on. This repository is the layer
-between a detector and a delivery report:
-
-* **Filtering**: confidence threshold, then per-class IoU Non-Maximum Suppression.
-* **Reports**: per-image JSON (`DetectionReport.to_json()`) and a Markdown summary of counts and confidence.
-* **Evaluation**: `evaluate(predictions, ground_truth, iou_threshold=0.5)` matches boxes one-to-one per class
-  (highest confidence first) and returns TP / FP / FN, precision, recall and F1, so "accuracy" means
-  agreement with labelled boxes, not the model's own confidence.
-* **Input validation**: inverted boxes or confidences outside 0..1 raise an error instead of producing silent nonsense.
-
-**No model is bundled.** Plug in any detector; for ultralytics YOLO use the adapter:
-
-```python
-from ultralytics import YOLO          # pip install ultralytics
-from detector import CharacterDetector, boxes_from_ultralytics, evaluate, metrics_markdown
-
-result = YOLO("your-face-eye-model.pt")("character.png")[0]
-report = CharacterDetector(0.5, 0.45).run_detection("character.png", boxes_from_ultralytics(result))
-print(report.to_json())
-print(metrics_markdown(evaluate(report.boxes, my_ground_truth_boxes)))
+```bash
+pip install -r requirements.txt     # opencv-python-headless 4.x (bundles the face/eye detectors)
+python detect.py samples/grace_hopper.jpg --gt samples/grace_hopper.gt.json --draw out.png --json report.json
 ```
 
-A face / eye model has to be trained or sourced separately (pretrained COCO weights have no face or eye class).
+<p align="center"><img src="docs/sample_output.png" alt="detection result" width="360"></p>
 
----
+```text
+| Class | TP | FP | FN | Precision | Recall | F1 (IoU>=0.5) |
+| `eye_left`  | 1 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| `eye_right` | 1 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+| `face`      | 1 | 0 | 0 | 1.000 | 1.000 | 1.000 |
+```
 
-## 2. Tests
+Coloured boxes are detections, thin white boxes the hand-made labels. One photo is a demo, not a benchmark.
+
+**Any other detector** (YOLO, a cloud API, a client's model): give its boxes as JSON and get the same filtering and
+scoring, no OpenCV needed:
+```bash
+python detect.py image.jpg --pred their_boxes.json --gt labels.json
+```
+Box files: `[{"class": "face", "box": [x1, y1, x2, y2], "score": 0.9}, …]`. For ultralytics results,
+`boxes_from_ultralytics(result)` converts directly.
+
+## What is in here
+
+| Part | File | Notes |
+| :--- | :--- | :--- |
+| Detector | `src/haar.py` | OpenCV Haar cascades for frontal faces, then eyes inside the upper face (at most one per side, at most 1/5 of the face wide). Scores are the cascade stage weight squashed to 0..1: good for ranking, not calibrated probabilities |
+| Filtering | `src/detector.py` | Confidence threshold, per-class NMS |
+| Evaluation | `src/detector.py` `evaluate()` | One-to-one matching per class at an IoU threshold, highest score first; a duplicate that survives NMS counts as a false positive |
+| Reports | `DetectionReport.to_json()`, `metrics_markdown()` | JSON for systems, Markdown for people |
+
+**Limits.** Haar cascades find frontal photographic faces. They do not work on anime characters or profiles; for
+those, train a detector (for example YOLO on labelled character images) and plug its boxes in with `--pred`.
+The evaluation layer is the same either way.
+
+## Tests
 
 ```bash
 python tests/test_detector.py
 ```
+NMS and thresholds, JSON output, box validation, matching edge cases, the ultralytics adapter, the command line
+with `--pred`, and real detection on the sample photo (when OpenCV is installed). GitHub Actions runs them on
+Windows, macOS and Linux.
 
-Covers threshold + NMS, JSON output, box validation, matching edge cases (a misplaced box is one FP and
-one FN; a duplicate that survives NMS is an FP, not a second hit) and the ultralytics adapter.
+## Sample image
 
-```markdown
-| Class | TP | FP | FN | Precision | Recall | F1 (IoU>=0.5) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| `eye_left` | 1 | 0 | 0 | 1.000 | 1.000 | 1.000 |
-| `eye_right` | 0 | 1 | 1 | 0.000 | 0.000 | 0.000 |
-| `face` | 1 | 0 | 0 | 1.000 | 1.000 | 1.000 |
-```
+`samples/grace_hopper.jpg`: Commodore Grace M. Hopper, official U.S. Navy photograph, public domain.
 
-The boxes in the tests are hand-made fixtures, not output from a real model.
+## License
 
----
-
-## 3. License
-MIT License.
+[MIT](LICENSE)

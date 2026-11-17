@@ -83,7 +83,55 @@ def run_tests():
     converted = boxes_from_ultralytics(fake)
     assert [(b.class_name, b.confidence, b.x2) for b in converted] == [("face", 0.91, 30.0), ("eye", 0.66, 9.0)]
 
+    run_cli_tests()
+    run_opencv_tests()
     print("\n>>> ALL VISION POC TESTS PASSED SUCCESSFULLY! <<<")
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLE = ROOT / "samples" / "grace_hopper.jpg"
+SAMPLE_GT = ROOT / "samples" / "grace_hopper.gt.json"
+
+
+def run_cli_tests():
+    """--pred path: works without OpenCV."""
+    import os
+    import subprocess
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    pred = tmp / "pred.json"
+    pred.write_text(json.dumps([{"class": "face", "box": [158, 130, 366, 333], "score": 0.9},
+                                {"class": "face", "box": [160, 132, 368, 335], "score": 0.6},
+                                {"class": "eye_left", "box": [10, 10, 40, 40], "score": 0.8}]), encoding="utf-8")
+    report = tmp / "r.json"
+    r = subprocess.run([sys.executable, str(ROOT / "detect.py"), str(SAMPLE), "--pred", str(pred), "--gt", str(SAMPLE_GT),
+                        "--json", str(report)], capture_output=True, text=True, encoding="utf-8",
+                       env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    assert r.returncode == 0, r.stderr
+    ev = json.loads(report.read_text(encoding="utf-8"))["evaluation"]
+    assert (ev["face"]["tp"], ev["face"]["fp"]) == (1, 0), ev          # duplicate removed by NMS
+    assert (ev["eye_left"]["fp"], ev["eye_left"]["fn"]) == (1, 1), ev  # misplaced eye
+    assert ev["eye_right"]["fn"] == 1
+    print("CLI ok")
+
+
+def run_opencv_tests():
+    try:
+        import cv2
+        if not hasattr(cv2, "CascadeClassifier"):
+            raise ImportError
+    except ImportError:
+        print("(OpenCV 4.x not installed: real detection test skipped)")
+        return
+    import haar
+    from detector import CharacterDetector
+    with open(SAMPLE_GT, encoding="utf-8") as f:
+        gt = [box(i, d["class"], 1.0, *d["box"]) for i, d in enumerate(json.load(f), start=1)]
+    report = CharacterDetector(0.5, 0.45).run_detection(SAMPLE, haar.detect(SAMPLE))
+    metrics = evaluate(report.boxes, gt)
+    print("\nOpenCV Haar on samples/grace_hopper.jpg\n" + metrics_markdown(metrics))
+    for cls in ("face", "eye_left", "eye_right"):
+        assert metrics[cls].true_positives == 1 and metrics[cls].false_positives == 0, (cls, metrics[cls])
 
 
 if __name__ == "__main__":
